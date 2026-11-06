@@ -50,9 +50,20 @@ export class UserDurableObject extends DurableObject<Env> {
     }
   }
 
+  /** Remembers a proof id for JTI_WINDOW_MS. Returns false if it was already used. */
+  private claimJti(key: string, now: number): boolean {
+    this.pruneJti(now);
+    if (this.seenJti.has(key)) return false;
+    this.seenJti.set(key, now + JTI_WINDOW_MS);
+    return true;
+  }
+
   // SESSIONS
 
-  async createSession(jkt: string, deviceLabel?: string): Promise<CreateSessionResult> {
+  async createSession(jkt: string, jti: string, deviceLabel?: string): Promise<CreateSessionResult> {
+    // Called after the password was checked, so a replayed login proof is rejected here without a lookup before it.
+    if (!this.claimJti(`login:${jti}`, Date.now())) return { ok: false, reason: "replay" };
+
     const sid = uuidv4();
     const refreshToken = randomToken();
     const refreshHash = await sha256(refreshToken);
@@ -65,10 +76,10 @@ export class UserDurableObject extends DurableObject<Env> {
     );
 
     await this.scheduleCleanup();
-    return { sid, refreshToken };
+    return { ok: true, sid, refreshToken };
   }
 
-  async refresh(sid: string, presentedToken: string, jkt: string): Promise<RefreshResult> {
+  async refresh(sid: string, presentedToken: string, jkt: string, jti: string): Promise<RefreshResult> {
     const presentedHash = await sha256(presentedToken);
     const newToken = randomToken();
     const newHash = await sha256(newToken);
@@ -77,11 +88,21 @@ export class UserDurableObject extends DurableObject<Env> {
     // synchronous section
     const row = this.getRow(sid);
     if (!row) return { ok: false, reason: "unknown_session" };
-    if (row.jkt !== jkt) return { ok: false, reason: "key_mismatch" };
+    if (row.jkt !== jkt) {
+      // A real refresh token presented with another key: the token has been stolen, so end the session.
+      // The user id and sid are not secret (the access token carries them), so only a caller who actually holds
+      // the token may end the session this way. Otherwise anyone could log a user out with a made-up token.
+      if (presentedHash === row.refresh_hash || presentedHash === row.prev_refresh_hash) {
+        this.deleteSession(sid);
+        return { ok: false, reason: "key_mismatch" };
+      }
+      return { ok: false, reason: "invalid_token" };
+    }
     if (this.isExpired(row, now)) {
       this.deleteSession(sid);
       return { ok: false, reason: "expired" };
     }
+    if (!this.claimJti(`${sid}:${jti}`, now)) return { ok: false, reason: "replay" };
 
     if (presentedHash === row.prev_refresh_hash) {
       // The previous token is tolerated briefly after a rotation: a page reloaded twice quickly, or two tabs,
@@ -122,10 +143,7 @@ export class UserDurableObject extends DurableObject<Env> {
     }
 
     if (jti) {
-      this.pruneJti(now);
-      const key = `${sid}:${jti}`;
-      if (this.seenJti.has(key)) return { ok: false, reason: "replay" };
-      this.seenJti.set(key, now + JTI_WINDOW_MS);
+      if (!this.claimJti(`${sid}:${jti}`, now)) return { ok: false, reason: "replay" };
     }
     return { ok: true };
   }
