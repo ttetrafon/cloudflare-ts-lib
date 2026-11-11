@@ -3,8 +3,8 @@ import { ABSOLUTE_TTL_MS, JTI_WINDOW_MS, IDLE_TTL_MS, REFRESH_GRACE_MS } from "l
 import { sha256 } from "library/lib-be/security/conversions";
 import { randomToken } from "library/lib-be/security/tokens";
 import { uuidv4 } from "library/lib/security/uuid";
-import { SessionInfo } from "library/lib/types/authentication";
-import { CreateSessionResult, RefreshResult, SessionRow, VerifyResult } from "library/shared/model/Security";
+import { CreateSessionResult, RefreshResult, SessionInfo, VerifyResult } from "library/lib/types/authentication";
+import { SessionRow } from "../types/security";
 
 /**
  * One instance per user (idFromName(String(userId))).
